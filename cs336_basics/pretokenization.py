@@ -1,4 +1,5 @@
 from array import array
+import gc
 import heapq
 import json
 import multiprocessing
@@ -189,7 +190,9 @@ def train_bpe(
     for token_str, freq in str_counts.items():
         words.append(tuple(token_str.encode("utf-8")))
         frequencies.append(freq)
+    str_counts.clear()
     del str_counts
+    gc.collect()
 
     token_bytes: list[bytes] = list(_BYTES)
     pair_counts: dict[int, int] = {}
