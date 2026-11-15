@@ -12,6 +12,8 @@ def find_chunk_boundaries(
     May return fewer chunks if the boundaries end up overlapping.
     """
     assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
+    if desired_num_chunks < 1 or not split_special_token:
+        raise ValueError("Chunk count must be positive and delimiter nonempty")
 
     # Get total file size in bytes
     file.seek(0, os.SEEK_END)
@@ -31,7 +33,8 @@ def find_chunk_boundaries(
         initial_position = chunk_boundaries[bi]
         file.seek(initial_position)  # Start at boundary guess
         while True:
-            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+            file.seek(initial_position)
+            mini_chunk = file.read(mini_chunk_size + len(split_special_token) - 1)  # Read a mini chunk
 
             # If EOF, this boundary should be at the end of the file
             if mini_chunk == b"":
@@ -47,16 +50,3 @@ def find_chunk_boundaries(
 
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
-
-
-## Usage
-with open(..., "rb") as f:
-    num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-
-    # The following is a serial implementation, but you can parallelize this
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
