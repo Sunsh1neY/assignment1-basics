@@ -340,9 +340,13 @@ class Tokenizer:
         self.bytes_to_id: dict[bytes, int] = {v: k for k, v in self.vocab.items()}
         self.merge_ranks: dict[tuple[bytes, bytes], int] = {pair: idx for idx, pair in enumerate(merges)}
         self.special_tokens_set = set(self.special_tokens)
+        self._special_ids: dict[str, int] = {
+            st: self.bytes_to_id[st.encode("utf-8")] for st in self.special_tokens
+        }
         self.merges = list(merges)
         self.special_pattern = _compile_special_pattern(self.special_tokens)
         self._encode_cache: dict[bytes, tuple[int, ...]] = {}
+        self._str_encode_cache: dict[str, tuple[int, ...]] = {}
 
     def save(self, vocab_filepath, merges_filepath):
         Path(vocab_filepath).write_text(
@@ -365,13 +369,13 @@ class Tokenizer:
         merges = [(bytes.fromhex(a), bytes.fromhex(b)) for a, b in merge_data]
         return cls(vocab, merges, special_tokens)
 
-    def _encode_word(self, token_bytes: bytes) -> list[int]:
+    def _encode_word_tuple(self, token_bytes: bytes) -> tuple[int, ...]:
         cached = self._encode_cache.get(token_bytes)
         if cached is not None:
-            return list(cached)
+            return cached
 
         if len(token_bytes) == 1:
-            ids = [self.bytes_to_id[token_bytes]]
+            ids = (self.bytes_to_id[token_bytes],)
         else:
             word = [_BYTES[b] for b in token_bytes]
             merge_ranks = self.merge_ranks
@@ -400,31 +404,46 @@ class Tokenizer:
                         i += 1
                 word = new_word
 
-            ids = [self.bytes_to_id[b] for b in word]
+            ids = tuple(self.bytes_to_id[b] for b in word)
 
         if len(self._encode_cache) < _ENCODE_CACHE_LIMIT:
-            self._encode_cache[token_bytes] = tuple(ids)
+            self._encode_cache[token_bytes] = ids
         return ids
+
+    def _encode_word(self, token_bytes: bytes) -> list[int]:
+        return list(self._encode_word_tuple(token_bytes))
+
+    def _encode_plain_segment(self, text: str, ids: list[int]) -> None:
+        cache = self._str_encode_cache
+        cache_get = cache.get
+        extend = ids.extend
+        encode_word_tuple = self._encode_word_tuple
+        tokens = _PRETOKEN.findall(text) if len(text) <= _FINDALL_MAX_LEN else (m.group() for m in _PRETOKEN.finditer(text))
+        for tok_str in tokens:
+            cached = cache_get(tok_str)
+            if cached is None:
+                cached = encode_word_tuple(tok_str.encode("utf-8"))
+                if len(cache) < _ENCODE_CACHE_LIMIT:
+                    cache[tok_str] = cached
+            extend(cached)
 
     def encode(self, text: str) -> list[int]:
-        if self.special_tokens:
-            escaped = [re.escape(tok) for tok in self.special_tokens]
-            pattern = f"({'|'.join(escaped)})"
-            parts = re.split(pattern, text)
-        else:
-            parts = [text]
-
         ids: list[int] = []
-        for part in parts:
-            if not part:
-                continue
-            if part in self.special_tokens_set:
-                ids.append(self.bytes_to_id[part.encode("utf-8")])
-            else:
-                for match in _PRETOKEN.finditer(part):
-                    token_bytes = match.group().encode("utf-8")
-                    ids.extend(self._encode_word(token_bytes))
+        if self.special_pattern is None:
+            self._encode_plain_segment(text, ids)
+            return ids
+
+        pos = 0
+        special_ids = self._special_ids
+        for match in self.special_pattern.finditer(text):
+            if match.start() > pos:
+                self._encode_plain_segment(text[pos : match.start()], ids)
+            ids.append(special_ids[match.group()])
+            pos = match.end()
+        if pos < len(text):
+            self._encode_plain_segment(text[pos:], ids)
         return ids
+
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         pending = ""
